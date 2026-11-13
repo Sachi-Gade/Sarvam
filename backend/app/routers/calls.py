@@ -246,3 +246,62 @@ def simulate_call_turn(payload: CallSimulateTurnRequest, db: Session = Depends(g
         "call_summary": call_summary_str
     }
 
+@router.post("/{call_id}/unanswered")
+def mark_call_unanswered(call_id: int, db: Session = Depends(get_db)):
+    call = db.query(VoiceCall).filter(VoiceCall.id == call_id).first()
+    if not call:
+        raise HTTPException(status_code=404, detail="Call record not found")
+
+    patient = db.query(Patient).filter(Patient.id == call.patient_id).first()
+    call.status = "Unanswered"
+    call.ended_at = datetime.utcnow()
+    call.duration_seconds = 0
+    call.conversation_outcome = "No Answer - Auto Fallback Triggered"
+
+    # Count prior unanswered calls
+    unanswered_count = db.query(VoiceCall).filter(
+        VoiceCall.patient_id == patient.id,
+        VoiceCall.status == "Unanswered"
+    ).count()
+
+    # If 2 or more unanswered calls, trigger Repeated Unanswered Calls alert
+    alert_created = False
+    if unanswered_count >= 1:  # this makes it 2+
+        create_alert(
+            db=db,
+            patient_id=patient.id,
+            call_id=call.id,
+            alert_type="Repeated Unanswered Calls",
+            priority="Medium",
+            title=f"Repeated Unanswered Calls: {patient.full_name}",
+            description=f"Patient did not answer multiple consecutive automated follow-up calls. Coordinator outreach or ASHA/ANM health worker visit recommended."
+        )
+        alert_created = True
+
+    # Generate bilingual WhatsApp / SMS reminder fallback message
+    meds_str = ", ".join([m.name for m in patient.medications]) if patient.medications else "prescribed medicines"
+    hotline = "+91-1800-108-CARE"
+
+    templates = {
+        "hi-IN": f"नमस्ते {patient.full_name} जी, डिस्ट्रिक्ट सिविल हॉस्पिटल की फॉलो-अप कॉल का संपर्क नहीं हो सका। कृपया अपनी निर्धारित दवाएं ({meds_str}) समय पर लें। किसी भी सहायता के लिए संपर्क करें: {hotline}",
+        "mr-IN": f"नमस्कार {patient.full_name} जी, शासकीय रुग्णालयाचा फॉलो-अप कॉल लागू शकला नाही. कृपया आपली औषधे ({meds_str}) वेळेवर घ्या. मदतीसाठी संपर्क साधा: {hotline}",
+        "pa-IN": f"ਸਤਿ ਸ਼੍ਰੀ ਅਕਾਲ {patient.full_name} ਜੀ, ਸਿਵਲ ਹਸਪਤਾਲ ਦੀ ਫਾਲੋ-ਅੱਪ ਕਾਲ ਨਹੀਂ ਲੱਗ ਸਕੀ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਦਵਾਈ ({meds_str}) ਸਮੇਂ ਸਿਰ ਲਓ। ਹੈਲਪਲਾਈਨ: {hotline}",
+        "en-IN": f"Hello {patient.full_name}, we missed you on your scheduled hospital follow-up call. Please continue taking your prescribed medications ({meds_str}). For assistance, call: {hotline}"
+    }
+
+    message_text = templates.get(patient.preferred_language, templates["en-IN"])
+    call.call_summary = f"No answer. Automated vernacular WhatsApp/SMS fallback dispatched to {patient.phone_number}."
+    db.commit()
+
+    return {
+        "call_id": call.id,
+        "status": "Unanswered",
+        "unanswered_count": unanswered_count + 1,
+        "alert_created": alert_created,
+        "whatsapp_fallback_sent": True,
+        "recipient_phone": patient.phone_number,
+        "recipient_name": patient.full_name,
+        "fallback_message": message_text
+    }
+
+

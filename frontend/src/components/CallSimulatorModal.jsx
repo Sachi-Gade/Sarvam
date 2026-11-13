@@ -55,6 +55,8 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
   const [urgencyBadge, setUrgencyBadge] = useState("Low");
   const [safetyAlert, setSafetyAlert] = useState(null);
   const [callSummary, setCallSummary] = useState(null);
+  const [isListening, setIsListening] = useState(false);
+  const [unansweredData, setUnansweredData] = useState(null);
 
   const audioPlayerRef = useRef(null);
   const transcriptEndRef = useRef(null);
@@ -99,6 +101,7 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
     setUrgencyBadge("Low");
     setSafetyAlert(null);
     setCallSummary(null);
+    setUnansweredData(null);
 
     try {
       const res = await api.startCall(selectedPatient.id, "Simulated Web Call");
@@ -117,6 +120,60 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
       }
     } catch (err) {
       alert("Failed to start call: " + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Microphone recognition is supported in Google Chrome and Microsoft Edge.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      const langMap = {
+        'hi-IN': 'hi-IN',
+        'mr-IN': 'mr-IN',
+        'pa-IN': 'pa-IN',
+        'en-IN': 'en-IN'
+      };
+      recognition.lang = langMap[selectedPatient?.preferred_language] || 'hi-IN';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = (e) => {
+        console.warn("Speech recognition error:", e);
+        setIsListening(false);
+      };
+      recognition.onresult = (event) => {
+        const spoken = event.results[0][0].transcript;
+        if (spoken) {
+          setPatientInput(spoken);
+        }
+      };
+
+      recognition.start();
+    } catch (e) {
+      console.error(e);
+      setIsListening(false);
+    }
+  };
+
+  const handleSimulateUnanswered = async () => {
+    if (!callSession) return;
+    setIsLoading(true);
+    try {
+      const res = await api.markCallUnanswered(callSession.call_id);
+      setUnansweredData(res);
+      setCallSummary("Call marked Unanswered. Automated vernacular WhatsApp/SMS reminder dispatched.");
+      if (onCallCompleted) onCallCompleted();
+    } catch (e) {
+      alert("Error marking call unanswered: " + e.message);
     } finally {
       setIsLoading(false);
     }
@@ -344,13 +401,26 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
               </div>
 
               {callSession ? (
-                <button
-                  onClick={handleEndCall}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-100 transition"
-                >
-                  <PhoneOff className="w-3.5 h-3.5" />
-                  <span>Hang Up</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  {!callSummary && (
+                    <button
+                      onClick={handleSimulateUnanswered}
+                      disabled={isLoading}
+                      title="Simulate patient not answering the call"
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold hover:bg-amber-100 transition"
+                    >
+                      <PhoneOff className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Simulate No Answer</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={handleEndCall}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-100 transition"
+                  >
+                    <PhoneOff className="w-3.5 h-3.5" />
+                    <span>Hang Up</span>
+                  </button>
+                </div>
               ) : (
                 <button
                   onClick={handleStartCall}
@@ -428,6 +498,34 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
                 </div>
               )}
 
+              {unansweredData && (
+                <div className="bg-emerald-50 border border-emerald-300 rounded-2xl p-4 text-xs text-emerald-950 space-y-2.5 mt-3 shadow-sm animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-emerald-800">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+                      WhatsApp / SMS Fallback Auto-Dispatched
+                    </span>
+                    <span className="text-[10px] bg-emerald-200 text-emerald-900 font-bold px-2 py-0.5 rounded-full">
+                      Sent to {unansweredData.recipient_phone}
+                    </span>
+                  </div>
+                  <div className="bg-white p-3.5 rounded-xl border border-emerald-200 text-slate-800 space-y-1.5">
+                    <p className="font-bold text-[11px] text-emerald-800 uppercase tracking-wider">
+                      District Civil Hospital • Patient Outreach Reminder
+                    </p>
+                    <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                      "{unansweredData.fallback_message}"
+                    </p>
+                  </div>
+                  {unansweredData.alert_created && (
+                    <div className="flex items-center gap-1.5 text-xs text-amber-900 font-bold bg-amber-100/80 p-2.5 rounded-xl border border-amber-200">
+                      <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                      <span>Repeated Unanswered Call Alert logged: Coordinator dispatch required</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div ref={transcriptEndRef} />
             </div>
 
@@ -438,7 +536,7 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
                 {/* One-Click Quick Response Chips */}
                 <div>
                   <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                    Simulate Patient Reply (Or Type / Speak):
+                    Simulate Patient Reply (Or Speak / Type):
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {(QUICK_CHIPS[callStage] || QUICK_CHIPS[1]).map((chip, idx) => (
@@ -462,12 +560,25 @@ export default function CallSimulatorModal({ isOpen, onClose, patients = [], onC
 
                 {/* Free Text / Mic Input */}
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={startListening}
+                    disabled={isLoading}
+                    title="Speak using microphone in patient's native language"
+                    className={`p-2.5 rounded-xl border transition-all flex items-center justify-center ${
+                      isListening
+                        ? 'bg-rose-600 text-white animate-pulse border-rose-600 shadow-md shadow-rose-500/30'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                    }`}
+                  >
+                    <Mic className="w-4 h-4" />
+                  </button>
                   <input
                     type="text"
                     value={patientInput}
                     onChange={(e) => setPatientInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendReply()}
-                    placeholder="Type patient's spoken answer..."
+                    placeholder={isListening ? "Listening to your voice..." : "Speak into mic or type answer..."}
                     disabled={isLoading}
                     className="flex-1 bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />

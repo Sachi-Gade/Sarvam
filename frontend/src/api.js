@@ -51,6 +51,7 @@ export const api = {
       method: "POST", 
       body: JSON.stringify({ call_id: callId, patient_reply: patientReply, patient_audio_base64: audioBase64 }) 
     }),
+  markCallUnanswered: (callId) => request(`/calls/${callId}/unanswered`, { method: "POST" }),
 
   // Alerts
   getAlerts: (params = {}) => {
